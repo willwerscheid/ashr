@@ -241,9 +241,11 @@ ash.workhorse <-
              optmethod = c("mixIP","mixSQP","cxxMixSquarem","mixEM",
                            "mixVBEM","w_mixEM"),
              df = NULL,nullweight = 10,pointmass = TRUE,
-             prior = c("nullbiased","uniform","unit"),mixsd = NULL,
-             gridmult = sqrt(2),outputlevel = 2,g = NULL,fixg = FALSE,
-             mode = 0,alpha = 0,grange = c(-Inf,Inf),control = list(),lik = NULL, weights=NULL, pi_thresh = 1e-10) {
+             prior = c("nullbiased","uniform","unit"),
+             mixsd = NULL,initsd = NULL,gridmult = sqrt(2),
+             outputlevel = 2,g = NULL,fixg = FALSE,
+             mode = 0,alpha = 0,grange = c(-Inf,Inf),control = list(),
+             lik = NULL, weights=NULL, pi_thresh = 1e-10) {
 
   if(!missing(pointmass) & !missing(method))
     stop("Specify either method or pointmass, not both")
@@ -359,7 +361,7 @@ ash.workhorse <-
     }
     
     if(is.null(mixsd)){
-      mixsd = autoselect.mixsd(data,gridmult,mode,grange,mixcompdist)
+      mixsd = autoselect.mixsd(data,gridmult,mode,grange,mixcompdist,initsd)
     }
     if(pointmass){
       mixsd = c(0,mixsd)
@@ -580,7 +582,6 @@ estimate_mixprop = function (data, g, prior,
   if (sum(is_zero_col) > 0) {
     k = k - sum(is_zero_col)
     matrix_lik = matrix_lik[, !is_zero_col]
-    lnorm = lnorm[!is_zero_col]
     prior = prior[!is_zero_col]
     pi_init = pi_init[!is_zero_col]
     if (!is.null(weights))
@@ -729,7 +730,7 @@ qval.from.lfdr = function(lfdr){
 # mode is the location about which inference is going to be centered
 # mult is the multiplier by which the sds differ across the grid
 # grange is the user-specified range of mixsd
-autoselect.mixsd = function(data,mult,mode,grange,mixcompdist){
+autoselect.mixsd = function(data,mult,mode,grange,mixcompdist,initsd){
   if (data$lik$name %in% c("pois","binom")){
     data$x = data$lik$data$y
   }
@@ -740,29 +741,36 @@ autoselect.mixsd = function(data,mult,mode,grange,mixcompdist){
   betahat = betahat[!exclude]
   sebetahat = sebetahat[!exclude]
 
-  sigmaamin = min(sebetahat)/10 #so that the minimum is small compared with measurement precision
-  if(all(betahat^2<=sebetahat^2)){
-    sigmaamax = 8*sigmaamin #to deal with the occassional odd case where this could happen; 8 is arbitrary
-  }else{
-    sigmaamax = 2*sqrt(max(betahat^2-sebetahat^2)) #this computes a rough largest value you'd want to use, based on idea that sigmaamax^2 + sebetahat^2 should be at least betahat^2
+  tmp = betahat^2 - sebetahat^2
+  sigmamax = mult^2 * sqrt(max(c(0, tmp)))
+  if (sigmamax == 0) {
+    # Everything is null.
+    return(c(sqrt(.Machine$double.eps), initsd))
   }
-  
+  sigmamin = sqrt(min(tmp[tmp > 0])) / mult^2
+
   if(mixcompdist=="halfuniform"){
-    sigmaamax = min(max(abs(grange-mode)), sigmaamax)
+    sigmamax = min(max(abs(grange-mode)), sigmamax)
   }else if(mixcompdist=="+uniform"){
-    sigmaamax = min(max(grange)-mode, sigmaamax)
+    sigmamax = min(max(grange)-mode, sigmamax)
   }else if(mixcompdist=="-uniform"){
-    sigmaamax = min(mode-min(grange), sigmaamax)
+    sigmamax = min(mode-min(grange), sigmamax)
   }else{
-    sigmaamax = min(min(abs(grange-mode)), sigmaamax)
+    sigmamax = min(min(abs(grange-mode)), sigmamax)
   }
   
   
-  if(mult==0){
-    return(c(0,sigmaamax/2))
+  if(mult == 0){
+    return(c(0, sigmamax / mult^2))
   }else{
-    npoint = ceiling(log2(sigmaamax/sigmaamin)/log2(mult))
-    return(mult^((-npoint):0) * sigmaamax)
+    npoint = ceiling((log(sigmamax) - log(sigmamin)) / log(mult))
+    mixsd = sigmamax * mult^((-npoint):0)
+    if (!is.null(initsd)) {
+      log_dist_mat = outer(log(mixsd), log(initsd), FUN = `-`)
+      min_log_dist = apply(log_dist_mat, 1, function(x) min(abs(x)))
+      mixsd = sort(c(initsd, mixsd[min_log_dist > log(mult) / 2]))
+    }
+    return(mixsd)
   }
 }
 
